@@ -15,7 +15,7 @@ app.get("/test-platforms", async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const response = await fetch(`${BASE}/platforms`, {
+    const response = await fetch(`https://api.soundcharts.com`, {
       method: "GET",
       headers: {
         "x-app-id": process.env.SOUNDCHARTS_APP_ID || "",
