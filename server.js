@@ -1,41 +1,16 @@
-import express from "express";
-import fetch from "node-fetch";
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// ✅ Define BASE (esto era lo que faltaba)
-const BASE = "https://api.soundcharts.com/api/v2";
-
-app.get("/", (req, res) => res.send("ok"));
-app.get("/health", (req, res) => res.json({ ok: true }));
-
-app.get("/test-platforms", async (req, res) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
+app.get("/cm-test", async (req, res) => {
   try {
-    const response = await fetch(`https://api.soundcharts.com`, {
+    const response = await fetch("https://api.chartmetric.com/api/artist/search?q=drake", {
       method: "GET",
       headers: {
-        "x-app-id": process.env.SOUNDCHARTS_APP_ID || "",
-        "x-api-key": process.env.SOUNDCHARTS_API_KEY || "",
-        "accept": "application/json",
-        "user-agent": "vpips-soundcharts-app/1.0",
-        "connection": "close"
-      },
-      signal: controller.signal
+        Authorization: `Bearer ${process.env.CHARTMETRIC_API_KEY}`,
+        Accept: "application/json"
+      }
     });
 
     const text = await response.text();
     res.status(response.status).send(text);
   } catch (error) {
-    res.status(500).json({
-      error: error.name === "AbortError" ? "timeout" : error.message
-    });
-  } finally {
-    clearTimeout(timeout);
+    res.status(500).json({ error: error.message });
   }
 });
-
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
