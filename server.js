@@ -3,6 +3,8 @@ import fetch from "node-fetch";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ✅ Define BASE (esto era lo que faltaba)
 const BASE = "https://api.soundcharts.com/api/v2";
 
 app.get("/", (req, res) => res.send("ok"));
