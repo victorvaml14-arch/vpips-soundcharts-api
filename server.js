@@ -111,6 +111,13 @@ app.get("/cm-sync-artist", async (req, res) => {
     }
 
     const stats = data?.obj || {};
+const listenersHistory = stats?.listeners || [];
+
+// Tomamos el último valor disponible
+const latestListeners =
+  Array.isArray(listenersHistory) && listenersHistory.length
+    ? listenersHistory[listenersHistory.length - 1].value
+    : 0;
 
     // 4️⃣ Guardar métricas básicas en hourly_artist_metrics
     const ts = new Date();
@@ -121,8 +128,8 @@ app.get("/cm-sync-artist", async (req, res) => {
       .upsert({
         ts_hour: ts.toISOString(),
         artist_id: artistId,
-        streams_total: stats.listeners || 0,
-        listeners_total: stats.listeners || 0,
+        streams_total: latestListeners,
+listeners_total: latestListeners,
         top_country_code: null,
         source: "chartmetric"
       });
