@@ -234,6 +234,96 @@ app.get("/dashboard-data", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.get("/dashboard", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("v_artist_dashboard")
+      .select("*")
+      .order("ts_hour", { ascending: false })
+      .limit(200);
+
+    if (error) throw error;
+
+    // KPI: última fila por artista
+    const latestByArtist = new Map();
+    for (const row of data) {
+      if (!latestByArtist.has(row.artist_name)) latestByArtist.set(row.artist_name, row);
+    }
+    const latest = Array.from(latestByArtist.values());
+
+    const html = `
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Artist Dashboard</title>
+  <style>
+    body{font-family:Arial, sans-serif; margin:24px; background:#0b0f17; color:#e6edf3;}
+    .row{display:flex; gap:16px; flex-wrap:wrap;}
+    .card{background:#121826; border:1px solid #1f2a44; border-radius:16px; padding:16px; min-width:220px; flex:1;}
+    h1{margin:0 0 12px 0; font-size:22px;}
+    h2{margin:0 0 8px 0; font-size:16px; color:#9fb3c8;}
+    .big{font-size:28px; font-weight:700;}
+    table{width:100%; border-collapse:collapse; margin-top:16px;}
+    th,td{border-bottom:1px solid #1f2a44; padding:10px; text-align:left;}
+    th{color:#9fb3c8; font-weight:600;}
+    .pill{display:inline-block; padding:4px 10px; border-radius:999px; background:#1f2a44; color:#cfe3ff; font-size:12px;}
+    .muted{color:#9fb3c8;}
+    a{color:#7dd3fc;}
+  </style>
+</head>
+<body>
+  <h1>VPIPS • Artist Performance Dashboard <span class="pill">auto</span></h1>
+  <div class="muted">Updated hourly via Chartmetric → Railway → Supabase</div>
+
+  <div class="row" style="margin-top:16px;">
+    <div class="card">
+      <h2>Total Artists</h2>
+      <div class="big">${latest.length}</div>
+    </div>
+    <div class="card">
+      <h2>Last Sync (UTC)</h2>
+      <div class="big">${latest[0]?.ts_hour ?? "-"}</div>
+    </div>
+    <div class="card">
+      <h2>Total Est. USD (latest)</h2>
+      <div class="big">$${latest.reduce((s,r)=>s+Number(r.estimated_usd||0),0).toFixed(2)}</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Artist</th>
+        <th>Listeners</th>
+        <th>Est. USD</th>
+        <th>Hour (UTC)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${latest.map(r=>`
+        <tr>
+          <td><b>${r.artist_name}</b></td>
+          <td>${r.listeners_total ?? 0}</td>
+          <td>$${Number(r.estimated_usd||0).toFixed(2)}</td>
+          <td class="muted">${r.ts_hour}</td>
+        </tr>
+      `).join("")}
+    </tbody>
+  </table>
+
+  <div class="muted" style="margin-top:14px;">
+    * Estimated USD uses a global payout factor (0.0035). Payments are not official and can vary by country/platform.
+  </div>
+</body>
+</html>`;
+    res.setHeader("Content-Type", "text/html");
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(`Error: ${e.message}`);
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
