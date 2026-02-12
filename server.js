@@ -117,8 +117,6 @@ const latestListeners =
     ? Number(listenersHistory[listenersHistory.length - 1].value || 0)
     : 0;
 
-const listenersHistory = stats?.listeners || [];
-
 // Tomamos el último valor disponible
 const latestListeners =
   Array.isArray(listenersHistory) && listenersHistory.length
