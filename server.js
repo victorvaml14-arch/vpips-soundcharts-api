@@ -69,12 +69,40 @@ app.get("/cm-test", async (req, res) => {
   }
 });
 
-app.get("/cm-sync-artist", async (req, res) => {
+app.get("/cm-sync-all", async (req, res) => {
   try {
-    const artistId = Number(req.query.artist_id);
-    if (!artistId) {
-      return res.status(400).json({ error: "artist_id required" });
+    const { data: artists, error } = await supabase
+      .from("artists")
+      .select("id")
+      .eq("is_active", true);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
     }
+
+    if (!artists?.length) {
+      return res.json({ ok: true, message: "No active artists found" });
+    }
+
+    for (const artist of artists) {
+      try {
+        await fetch(
+          `https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${artist.id}`
+        );
+      } catch (e) {
+        console.error("Error syncing artist:", artist.id);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      synced_artists: artists.length
+    });
+
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 
     // 1️⃣ Obtener chartmetric_artist_id desde Supabase
     const { data: rows, error } = await supabase
