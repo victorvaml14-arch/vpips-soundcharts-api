@@ -6,111 +6,159 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const CM_BASE = "https://api.chartmetric.com/api";
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// --- Safety: no tumbar el proceso por errores ---
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("uncaughtException:", err);
+});
+
+// --- Auth ---
 async function getAccessToken() {
   const r = await fetch(`${CM_BASE}/token`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json"
-    },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
-      refreshtoken: process.env.CHARTMETRIC_REFRESH_TOKEN || ""
-    })
+      refreshtoken: process.env.CHARTMETRIC_REFRESH_TOKEN || "",
+    }),
   });
 
   const data = await r.json().catch(() => ({}));
-
   if (!r.ok || !data.token) {
     throw new Error(`token_error status=${r.status} body=${JSON.stringify(data)}`);
   }
-
   return data.token;
 }
 
+// --- Basic routes ---
 app.get("/", (req, res) => res.send("ok"));
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+// --- Test: Chartmetric search ---
 app.get("/cm-test", async (req, res) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
   try {
     const accessToken = await getAccessToken();
-    const url = `${CM_BASE}/search?q=drake&type=artists`;
-
-    const r = await fetch(url, {
+    const r = await fetch(`${CM_BASE}/search?q=drake&type=artists`, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json"
-      },
-      signal: controller.signal
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
     });
-
     const text = await r.text();
-    res.status(200).json({
-      ok: r.ok,
-      upstream_status: r.status,
-      upstream_preview: text.slice(0, 800)
-    });
-
+    res.status(200).json({ ok: r.ok, upstream_status: r.status, upstream_preview: text.slice(0, 800) });
   } catch (e) {
-    res.status(200).json({
-      ok: false,
-      error: e.name === "AbortError" ? "timeout" : e.message
-    });
-  } finally {
-    clearTimeout(timeout);
+    res.status(200).json({ ok: false, error: e.message });
   }
 });
 
-app.get("/cm-sync-all", async (req, res) => {
+// --- Link artist: save chartmetric_artist_id into Supabase artists ---
+app.get("/cm-link-artist", async (req, res) => {
   try {
-    const { data: artists, error } = await supabase
-      .from("artists")
-      .select("id")
-      .eq("is_active", true);
+    const artistId = Number(req.query.artist_id);
+    const q = String(req.query.q || "").trim();
+    if (!artistId || !q) return res.status(400).json({ error: "artist_id and q are required" });
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
+    const accessToken = await getAccessToken();
 
-    if (!artists?.length) {
-      return res.json({ ok: true, message: "No active artists found" });
-    }
-
-    for (const artist of artists) {
-      try {
-        await fetch(
-          `https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${artist.id}`
-        );
-      } catch (e) {
-        console.error("Error syncing artist:", artist.id);
-      }
-    }
-
-    return res.json({
-      ok: true,
-      synced_artists: artists.length
+    const r = await fetch(`${CM_BASE}/search?q=${encodeURIComponent(q)}&type=artists`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
     });
 
+    const data = await r.json().catch(() => ({}));
+    const artists = data?.obj?.artists || [];
+    if (!artists.length) return res.status(404).json({ error: "No artists found in Chartmetric" });
+
+    artists.sort(
+      (a, b) =>
+        (b.verified === true) - (a.verified === true) ||
+        (b.sp_followers || 0) - (a.sp_followers || 0)
+    );
+    const best = artists[0];
+
+    const { error } = await supabase
+      .from("artists")
+      .update({ chartmetric_artist_id: best.id })
+      .eq("id", artistId);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ ok: true, artist_id: artistId, chartmetric_artist_id: best.id, chosen_name: best.name });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
 });
 
-    // 1️⃣ Obtener chartmetric_artist_id desde Supabase
-    const { data: rows, error } = await supabase
+// --- Sync one artist: pull spotify stats history, store latest into hourly_artist_metrics ---
+app.get("/cm-sync-artist", async (req, res) => {
+  try {
+    const artistId = Number(req.query.artist_id);
+    if (!artistId) return res.status(400).json({ error: "artist_id required" });
+
+    const { data: rows, error: e1 } = await supabase
       .from("artists")
-      .select("chartmetric_artist_id")
+      .select("id, chartmetric_artist_id")
       .eq("id", artistId)
       .limit(1);
 
+    if (e1) return res.status(500).json({ error: e1.message });
+    if (!rows?.length || !rows[0].chartmetric_artist_id) {
+      return res.status(400).json({ error: "artist has no chartmetric_artist_id yet" });
+    }
+
+    const cmId = rows[0].chartmetric_artist_id;
+    const accessToken = await getAccessToken();
+
+    const r = await fetch(`${CM_BASE}/artist/${cmId}/stat/spotify`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(500).json({ error: `upstream ${r.status}`, body: data });
+
+    const stats = data?.obj || {};
+    const listenersHistory = stats?.listeners || [];
+
+    const latestListeners =
+      Array.isArray(listenersHistory) && listenersHistory.length
+        ? Number(listenersHistory[listenersHistory.length - 1].value || 0)
+        : 0;
+
+    const ts = new Date();
+    ts.setMinutes(0, 0, 0);
+
+    const { error: upsertErr } = await supabase
+      .from("hourly_artist_metrics")
+      .upsert({
+        ts_hour: ts.toISOString(),
+        artist_id: artistId,
+        streams_total: latestListeners,
+        listeners_total: latestListeners,
+        top_country_code: null,
+        source: "chartmetric",
+      });
+
+    if (upsertErr) return res.status(500).json({ error: upsertErr.message });
+
+    return res.json({
+      ok: true,
+      artist_id: artistId,
+      chartmetric_id: cmId,
+      latest_listeners: latestListeners,
+      saved_at: ts.toISOString(),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Sync all active artists ---
 app.get("/cm-sync-all", async (req, res) => {
   try {
     const { data: artists, error } = await supabase
@@ -118,15 +166,9 @@ app.get("/cm-sync-all", async (req, res) => {
       .select("id")
       .eq("is_active", true);
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
+    if (error) return res.status(500).json({ error: error.message });
+    if (!artists?.length) return res.json({ ok: true, synced_artists: 0 });
 
-    if (!artists?.length) {
-      return res.json({ ok: true, synced_artists: 0 });
-    }
-
-    // Llamar el endpoint existente por cada artista
     for (const a of artists) {
       try {
         await fetch(`https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${a.id}`);
@@ -139,102 +181,6 @@ app.get("/cm-sync-all", async (req, res) => {
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
-});
-
-    if (error) return res.status(500).json({ error: error.message });
-    if (!rows?.length || !rows[0].chartmetric_artist_id) {
-      return res.status(400).json({ error: "Artist not linked to Chartmetric yet" });
-    }
-
-    const cmId = rows[0].chartmetric_artist_id;
-
-    // 2️⃣ Obtener access token
-    const accessToken = await getAccessToken();
-
-    // 3️⃣ Llamar endpoint Spotify stats
-    const r = await fetch(
-      `${CM_BASE}/artist/${cmId}/stat/spotify`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json"
-        }
-      }
-    );
-
-    const data = await r.json();
-    if (!r.ok) {
-      return res.status(500).json({ error: data });
-    }
-
-const stats = data?.obj || {};
-const listenersHistory = stats?.listeners || [];
-
-// Tomamos el último valor disponible
-const latestListeners =
-  Array.isArray(listenersHistory) && listenersHistory.length
-    ? listenersHistory[listenersHistory.length - 1].value
-    : 0;
-
-    // 4️⃣ Guardar métricas básicas en hourly_artist_metrics
-    const ts = new Date();
-    ts.setMinutes(0,0,0);
-
-    const { error: insertError } = await supabase
-      .from("hourly_artist_metrics")
-      .upsert({
-        ts_hour: ts.toISOString(),
-        artist_id: artistId,
-        streams_total: latestListeners,
-listeners_total: latestListeners,
-        top_country_code: null,
-        source: "chartmetric"
-      });
-
-    if (insertError) {
-      return res.status(500).json({ error: insertError.message });
-    }
-
-    return res.json({
-      ok: true,
-      chartmetric_id: cmId,
-      listeners: stats.listeners,
-      saved_at: ts
-    });
-
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-});
-// Auto sync every hour
-setInterval(async () => {
-  try {
-    console.log("Running hourly sync...");
-
-    const artists = await supabase
-      .from("artists")
-      .select("id")
-      .eq("is_active", true);
-
-    for (const artist of artists.data || []) {
-      await fetch(
-        `https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${artist.id}`
-      );
-    }
-
-    console.log("Hourly sync completed");
-  } catch (err) {
-    console.error("Cron error:", err.message);
-  }
-}, 60 * 60 * 1000); // every hour
-
-process.on("unhandledRejection", (reason) => {
-  console.error("unhandledRejection:", reason);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("uncaughtException:", err);
 });
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
