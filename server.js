@@ -113,11 +113,6 @@ app.get("/cm-sync-artist", async (req, res) => {
 const stats = data?.obj || {};
 const listenersHistory = stats?.listeners || [];
 
-const latestListeners =
-  Array.isArray(listenersHistory) && listenersHistory.length
-    ? Number(listenersHistory[listenersHistory.length - 1].value || 0)
-    : 0;
-
 // Tomamos el último valor disponible
 const latestListeners =
   Array.isArray(listenersHistory) && listenersHistory.length
