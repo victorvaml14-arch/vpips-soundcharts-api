@@ -177,4 +177,12 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000); // every hour
 
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("uncaughtException:", err);
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
