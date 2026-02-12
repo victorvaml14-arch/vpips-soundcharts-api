@@ -1,3 +1,19 @@
+app.get("/dashboard-data", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("v_artist_dashboard")
+      .select("*")
+      .order("ts_hour", { ascending: false })
+      .limit(500);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json(data);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 import express from "express";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
