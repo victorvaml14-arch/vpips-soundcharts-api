@@ -69,53 +69,75 @@ app.get("/cm-test", async (req, res) => {
   }
 });
 
-app.get("/cm-link-artist", async (req, res) => {
+app.get("/cm-sync-artist", async (req, res) => {
   try {
     const artistId = Number(req.query.artist_id);
-    const q = String(req.query.q || "").trim();
-
-    if (!artistId || !q) {
-      return res.status(400).json({ error: "artist_id and q are required" });
+    if (!artistId) {
+      return res.status(400).json({ error: "artist_id required" });
     }
 
-    const accessToken = await getAccessToken();
-
-    const r = await fetch(`${CM_BASE}/search?q=${encodeURIComponent(q)}&type=artists`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json"
-      }
-    });
-
-    const data = await r.json();
-    const artists = data?.obj?.artists || [];
-
-    if (!artists.length) {
-      return res.status(404).json({ error: "No artists found in Chartmetric" });
-    }
-
-    // ✅ elegir el mejor: verified primero, luego más followers
-    artists.sort((a, b) =>
-      (b.verified === true) - (a.verified === true) ||
-      (b.sp_followers || 0) - (a.sp_followers || 0)
-    );
-
-    const best = artists[0];
-
-    const { error } = await supabase
+    // 1️⃣ Obtener chartmetric_artist_id desde Supabase
+    const { data: rows, error } = await supabase
       .from("artists")
-      .update({ chartmetric_artist_id: best.id })
-      .eq("id", artistId);
+      .select("chartmetric_artist_id")
+      .eq("id", artistId)
+      .limit(1);
 
     if (error) return res.status(500).json({ error: error.message });
+    if (!rows?.length || !rows[0].chartmetric_artist_id) {
+      return res.status(400).json({ error: "Artist not linked to Chartmetric yet" });
+    }
+
+    const cmId = rows[0].chartmetric_artist_id;
+
+    // 2️⃣ Obtener access token
+    const accessToken = await getAccessToken();
+
+    // 3️⃣ Llamar endpoint Spotify stats
+    const r = await fetch(
+      `${CM_BASE}/artist/${cmId}/stat/spotify`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const data = await r.json();
+    if (!r.ok) {
+      return res.status(500).json({ error: data });
+    }
+
+    const stats = data?.obj || {};
+
+    // 4️⃣ Guardar métricas básicas en hourly_artist_metrics
+    const ts = new Date();
+    ts.setMinutes(0,0,0);
+
+    const { error: insertError } = await supabase
+      .from("hourly_artist_metrics")
+      .upsert({
+        ts_hour: ts.toISOString(),
+        artist_id: artistId,
+        streams_total: stats.listeners || 0,
+        listeners_total: stats.listeners || 0,
+        top_country_code: null,
+        source: "chartmetric"
+      });
+
+    if (insertError) {
+      return res.status(500).json({ error: insertError.message });
+    }
 
     return res.json({
       ok: true,
-      artist_id: artistId,
-      chartmetric_artist_id: best.id,
-      chosen_name: best.name
+      chartmetric_id: cmId,
+      listeners: stats.listeners,
+      saved_at: ts
     });
+
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
