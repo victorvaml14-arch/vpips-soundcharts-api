@@ -1,10 +1,15 @@
 import express from "express";
 import fetch from "node-fetch";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const CM_BASE = "https://api.chartmetric.com/api";
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 async function getAccessToken() {
   const r = await fetch(`${CM_BASE}/token`, {
@@ -61,6 +66,58 @@ app.get("/cm-test", async (req, res) => {
     });
   } finally {
     clearTimeout(timeout);
+  }
+});
+
+app.get("/cm-link-artist", async (req, res) => {
+  try {
+    const artistId = Number(req.query.artist_id);
+    const q = String(req.query.q || "").trim();
+
+    if (!artistId || !q) {
+      return res.status(400).json({ error: "artist_id and q are required" });
+    }
+
+    const accessToken = await getAccessToken();
+
+    const r = await fetch(`${CM_BASE}/search?q=${encodeURIComponent(q)}&type=artists`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json"
+      }
+    });
+
+    const data = await r.json();
+    const artists = data?.obj?.artists || [];
+
+    if (!artists.length) {
+      return res.status(404).json({ error: "No artists found in Chartmetric" });
+    }
+
+    // ✅ elegir el mejor: verified primero, luego más followers
+    artists.sort((a, b) =>
+      (b.verified === true) - (a.verified === true) ||
+      (b.sp_followers || 0) - (a.sp_followers || 0)
+    );
+
+    const best = artists[0];
+
+    const { error } = await supabase
+      .from("artists")
+      .update({ chartmetric_artist_id: best.id })
+      .eq("id", artistId);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({
+      ok: true,
+      artist_id: artistId,
+      chartmetric_artist_id: best.id,
+      chosen_name: best.name
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
 });
 
