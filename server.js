@@ -111,6 +111,12 @@ app.get("/cm-sync-artist", async (req, res) => {
     }
 
     const stats = data?.obj || {};
+    const listenersHistory = stats?.listeners || [];
+const latestListeners =
+  Array.isArray(listenersHistory) && listenersHistory.length
+    ? Number(listenersHistory[listenersHistory.length - 1].value || 0)
+    : 0;
+
 const listenersHistory = stats?.listeners || [];
 
 // Tomamos el último valor disponible
@@ -149,5 +155,26 @@ listeners_total: latestListeners,
     return res.status(500).json({ error: e.message });
   }
 });
+// Auto sync every hour
+setInterval(async () => {
+  try {
+    console.log("Running hourly sync...");
+
+    const artists = await supabase
+      .from("artists")
+      .select("id")
+      .eq("is_active", true);
+
+    for (const artist of artists.data || []) {
+      await fetch(
+        `https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${artist.id}`
+      );
+    }
+
+    console.log("Hourly sync completed");
+  } catch (err) {
+    console.error("Cron error:", err.message);
+  }
+}, 60 * 60 * 1000); // every hour
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
