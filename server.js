@@ -110,8 +110,9 @@ app.get("/cm-sync-artist", async (req, res) => {
       return res.status(500).json({ error: data });
     }
 
-    const stats = data?.obj || {};
-    const listenersHistory = stats?.listeners || [];
+const stats = data?.obj || {};
+const listenersHistory = stats?.listeners || [];
+
 const latestListeners =
   Array.isArray(listenersHistory) && listenersHistory.length
     ? Number(listenersHistory[listenersHistory.length - 1].value || 0)
