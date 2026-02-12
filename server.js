@@ -111,6 +111,36 @@ app.get("/cm-sync-all", async (req, res) => {
       .eq("id", artistId)
       .limit(1);
 
+app.get("/cm-sync-all", async (req, res) => {
+  try {
+    const { data: artists, error } = await supabase
+      .from("artists")
+      .select("id")
+      .eq("is_active", true);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    if (!artists?.length) {
+      return res.json({ ok: true, synced_artists: 0 });
+    }
+
+    // Llamar el endpoint existente por cada artista
+    for (const a of artists) {
+      try {
+        await fetch(`https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${a.id}`);
+      } catch (e) {
+        console.error("sync error artist_id=", a.id, e.message);
+      }
+    }
+
+    return res.json({ ok: true, synced_artists: artists.length });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
     if (error) return res.status(500).json({ error: error.message });
     if (!rows?.length || !rows[0].chartmetric_artist_id) {
       return res.status(400).json({ error: "Artist not linked to Chartmetric yet" });
