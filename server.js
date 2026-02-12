@@ -1,19 +1,3 @@
-app.get("/dashboard-data", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("v_artist_dashboard")
-      .select("*")
-      .order("ts_hour", { ascending: false })
-      .limit(500);
-
-    if (error) return res.status(500).json({ error: error.message });
-
-    return res.json(data);
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-});
-
 import express from "express";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
@@ -23,12 +7,13 @@ const PORT = process.env.PORT || 3000;
 
 const CM_BASE = "https://api.chartmetric.com/api";
 
+// 🔐 Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// --- Safety: evitar que se caiga el proceso por errores ---
+// 🔒 Protección contra crashes
 process.on("unhandledRejection", (reason) => {
   console.error("unhandledRejection:", reason);
 });
@@ -36,214 +21,220 @@ process.on("uncaughtException", (err) => {
   console.error("uncaughtException:", err);
 });
 
-// --- Auth: obtener access token desde refresh token ---
+// ========================
+// AUTH TOKEN
+// ========================
 async function getAccessToken() {
-  const r = await fetch(`${CM_BASE}/token`, {
+  const response = await fetch(`${CM_BASE}/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
     body: JSON.stringify({
-      refreshtoken: process.env.CHARTMETRIC_REFRESH_TOKEN || "",
+      refreshtoken: process.env.CHARTMETRIC_REFRESH_TOKEN,
     }),
   });
 
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok || !data.token) {
-    throw new Error(`token_error status=${r.status} body=${JSON.stringify(data)}`);
+  const data = await response.json();
+
+  if (!response.ok || !data.token) {
+    throw new Error("Chartmetric token error");
   }
+
   return data.token;
 }
 
-// --- Basic routes ---
-app.get("/", (req, res) => res.send("ok"));
+// ========================
+// BASIC ROUTES
+// ========================
+app.get("/", (req, res) => res.send("OK"));
 app.get("/health", (req, res) => res.json({ ok: true }));
 
-// --- Test: Chartmetric search ---
+// ========================
+// TEST CHARTMETRIC
+// ========================
 app.get("/cm-test", async (req, res) => {
   try {
-    const accessToken = await getAccessToken();
-    const r = await fetch(`${CM_BASE}/search?q=drake&type=artists`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-    });
-    const text = await r.text();
-    res.status(200).json({
-      ok: r.ok,
-      upstream_status: r.status,
-      upstream_preview: text.slice(0, 800),
-    });
-  } catch (e) {
-    res.status(200).json({ ok: false, error: e.message });
+    const token = await getAccessToken();
+
+    const response = await fetch(
+      `${CM_BASE}/search?q=drake&type=artists`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+    res.json({ ok: true, preview: data.obj?.artists?.slice(0, 3) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// --- Link artist: guarda chartmetric_artist_id en Supabase ---
+// ========================
+// LINK ARTIST (Guardar Chartmetric ID)
+// ========================
 app.get("/cm-link-artist", async (req, res) => {
   try {
     const artistId = Number(req.query.artist_id);
-    const q = String(req.query.q || "").trim();
-    if (!artistId || !q) return res.status(400).json({ error: "artist_id and q are required" });
+    const q = req.query.q;
 
-    const accessToken = await getAccessToken();
+    if (!artistId || !q)
+      return res.status(400).json({ error: "artist_id and q required" });
 
-    const r = await fetch(`${CM_BASE}/search?q=${encodeURIComponent(q)}&type=artists`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-    });
+    const token = await getAccessToken();
 
-    const data = await r.json().catch(() => ({}));
-    const artists = data?.obj?.artists || [];
-    if (!artists.length) return res.status(404).json({ error: "No artists found in Chartmetric" });
-
-    // Prefer verified + higher followers
-    artists.sort(
-      (a, b) =>
-        (b.verified === true) - (a.verified === true) ||
-        (b.sp_followers || 0) - (a.sp_followers || 0)
+    const response = await fetch(
+      `${CM_BASE}/search?q=${encodeURIComponent(q)}&type=artists`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
     );
+
+    const data = await response.json();
+    const artists = data.obj?.artists || [];
+
+    if (!artists.length)
+      return res.status(404).json({ error: "No artist found" });
 
     const best = artists[0];
 
-    const { error } = await supabase
+    await supabase
       .from("artists")
       .update({ chartmetric_artist_id: best.id })
       .eq("id", artistId);
 
-    if (error) return res.status(500).json({ error: error.message });
-
-    return res.json({
+    res.json({
       ok: true,
       artist_id: artistId,
       chartmetric_artist_id: best.id,
       chosen_name: best.name,
-      verified: best.verified === true,
     });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// --- Sync ONE artist: guarda métricas + USD estimado ---
+// ========================
+// SYNC ONE ARTIST
+// ========================
 app.get("/cm-sync-artist", async (req, res) => {
   try {
     const artistId = Number(req.query.artist_id);
-    if (!artistId) return res.status(400).json({ error: "artist_id required" });
+    if (!artistId)
+      return res.status(400).json({ error: "artist_id required" });
 
-    // 1) chartmetric_artist_id
-    const { data: rows, error: e1 } = await supabase
+    const { data: artist } = await supabase
       .from("artists")
-      .select("id, chartmetric_artist_id")
+      .select("*")
       .eq("id", artistId)
-      .limit(1);
+      .single();
 
-    if (e1) return res.status(500).json({ error: e1.message });
-    if (!rows?.length || !rows[0].chartmetric_artist_id) {
-      return res.status(400).json({ error: "artist has no chartmetric_artist_id yet" });
-    }
+    if (!artist?.chartmetric_artist_id)
+      return res
+        .status(400)
+        .json({ error: "Artist not linked to Chartmetric" });
 
-    const cmId = rows[0].chartmetric_artist_id;
+    const token = await getAccessToken();
 
-    // 2) token
-    const accessToken = await getAccessToken();
+    const response = await fetch(
+      `${CM_BASE}/artist/${artist.chartmetric_artist_id}/stat/spotify`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
 
-    // 3) spotify stats
-    const r = await fetch(`${CM_BASE}/artist/${cmId}/stat/spotify`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-    });
-
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      return res.status(500).json({ error: `upstream ${r.status}`, body: data });
-    }
-
-    // 4) latest listeners
-    const stats = data?.obj || {};
-    const listenersHistory = stats?.listeners || [];
+    const data = await response.json();
+    const stats = data.obj || {};
+    const listenersHistory = stats.listeners || [];
 
     const latestListeners =
-      Array.isArray(listenersHistory) && listenersHistory.length
-        ? Number(listenersHistory[listenersHistory.length - 1].value || 0)
+      listenersHistory.length > 0
+        ? Number(listenersHistory[listenersHistory.length - 1].value)
         : 0;
 
-    // 5) hour timestamp
     const ts = new Date();
     ts.setMinutes(0, 0, 0);
-    const tsHour = ts.toISOString();
 
-    // 6) upsert metrics
-    const { error: upsertErr } = await supabase
-      .from("hourly_artist_metrics")
-      .upsert({
-        ts_hour: tsHour,
-        artist_id: artistId,
-        streams_total: latestListeners,
-        listeners_total: latestListeners,
-        top_country_code: null,
-        source: "chartmetric",
-      });
-
-    if (upsertErr) return res.status(500).json({ error: upsertErr.message });
-
-    // 7) estimate USD (modelo simple global)
-    const payoutPerStream = 0.0035;
-    const estimatedUsd = Number((latestListeners * payoutPerStream).toFixed(6));
-
-    const { error: revErr } = await supabase
-      .from("hourly_artist_revenue_estimate")
-      .upsert({
-        ts_hour: tsHour,
-        artist_id: artistId,
-        estimated_usd: estimatedUsd,
-      });
-
-    if (revErr) return res.status(500).json({ error: revErr.message });
-
-    return res.json({
-      ok: true,
+    // Guardar métricas
+    await supabase.from("hourly_artist_metrics").upsert({
+      ts_hour: ts.toISOString(),
       artist_id: artistId,
-      chartmetric_id: cmId,
-      ts_hour: tsHour,
-      latest_listeners: latestListeners,
-      payout_per_stream: payoutPerStream,
+      streams_total: latestListeners,
+      listeners_total: latestListeners,
+      top_country_code: null,
+      source: "chartmetric",
+    });
+
+    // Calcular revenue estimado
+    const payout = 0.0035;
+    const estimatedUsd = Number((latestListeners * payout).toFixed(6));
+
+    await supabase.from("hourly_artist_revenue_estimate").upsert({
+      ts_hour: ts.toISOString(),
+      artist_id: artistId,
       estimated_usd: estimatedUsd,
     });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+
+    res.json({
+      ok: true,
+      artist_id: artistId,
+      listeners: latestListeners,
+      estimated_usd: estimatedUsd,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// --- Sync ALL active artists ---
+// ========================
+// SYNC ALL ARTISTS
+// ========================
 app.get("/cm-sync-all", async (req, res) => {
   try {
-    const { data: artists, error } = await supabase
+    const { data: artists } = await supabase
       .from("artists")
       .select("id")
       .eq("is_active", true);
 
-    if (error) return res.status(500).json({ error: error.message });
-    if (!artists?.length) return res.json({ ok: true, synced_artists: 0 });
-
-    const results = [];
     for (const a of artists) {
-      try {
-        // Llama tu propio endpoint (simple y suficiente)
-        const rr = await fetch(
-          `https://imaginative-passion-production.up.railway.app/cm-sync-artist?artist_id=${a.id}`
-        );
-        results.push({ artist_id: a.id, status: rr.status });
-      } catch (e) {
-        results.push({ artist_id: a.id, status: "error", error: e.message });
-      }
+      await fetch(
+        `${req.protocol}://${req.get("host")}/cm-sync-artist?artist_id=${a.id}`
+      );
     }
 
-    return res.json({
-      ok: true,
-      synced_artists: artists.length,
-      results,
-    });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+    res.json({ ok: true, synced: artists.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// ========================
+// DASHBOARD DATA ENDPOINT
+// ========================
+app.get("/dashboard-data", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("v_artist_dashboard")
+      .select("*")
+      .order("ts_hour", { ascending: false })
+      .limit(500);
+
+    if (error) throw error;
+
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
