@@ -2,6 +2,7 @@
   "name": "vpips-soundcharts-api",
   "type": "module",
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "express": "^4.19.2",
     "node-fetch": "^3.3.2"
   },
