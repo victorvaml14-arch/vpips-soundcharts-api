@@ -325,6 +325,52 @@ app.get("/dashboard", async (req, res) => {
   }
 });
 
+app.get("/cm-link-artist-spotify", async (req, res) => {
+  try {
+    const artistId = Number(req.query.artist_id);
+    const spotifyId = String(req.query.spotify_id || "").trim();
+
+    if (!artistId || !spotifyId) {
+      return res.status(400).json({ error: "artist_id and spotify_id are required" });
+    }
+
+    const token = await getAccessToken();
+
+    // 1) Buscar en Chartmetric usando el Spotify ID como query
+    const r = await fetch(`${CM_BASE}/search?q=${encodeURIComponent(spotifyId)}&type=artists`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    });
+
+    const data = await r.json();
+    const artists = data?.obj?.artists || [];
+    if (!artists.length) return res.status(404).json({ error: "No Chartmetric artist found for this spotify_id" });
+
+    // 2) Elegir el candidato que realmente tenga ese Spotify ID (varios nombres posibles)
+    // Chartmetric suele traer campos tipo sp_artist_id / spotify_id / external_ids. Probamos varios.
+    const match = artists.find(a =>
+      String(a.sp_artist_id || a.spotify_artist_id || a.spotify_id || "") === spotifyId
+    ) || artists[0];
+
+    // 3) Guardar chartmetric_artist_id
+    const { error } = await supabase
+      .from("artists")
+      .update({ chartmetric_artist_id: match.id, spotify_artist_id: spotifyId })
+      .eq("id", artistId);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({
+      ok: true,
+      artist_id: artistId,
+      spotify_artist_id: spotifyId,
+      chartmetric_artist_id: match.id,
+      chosen_name: match.name
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
